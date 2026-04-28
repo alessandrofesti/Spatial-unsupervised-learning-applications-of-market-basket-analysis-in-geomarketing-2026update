@@ -1,0 +1,561 @@
+---
+title: "Spatial unsupervised learning – applications of market basket analysis in geomarketing - 2026 update"
+author: "Alessandro Festi"
+date: "April 2026"
+output:
+  github_document:
+    toc: true
+    toc_depth: 2
+    df_print: kable
+always_allow_html: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  comment = NA
+)
+
+library(knitr)
+
+show_csv_head <- function(path, caption, n = 5) {
+  if (!file.exists(path)) {
+    cat(paste0("\n\n**Output not found:** `", path, "`\n\n"))
+    return(invisible(NULL))
+  }
+
+  df <- read.csv(path, stringsAsFactors = FALSE)
+
+  cat(paste0("\n\n**Output file:** `", path, "`\n\n"))
+
+  knitr::kable(
+    head(df, n),
+    caption = caption
+  )
+}
+
+show_image <- function(path, caption = NULL, width = "80%") {
+  if (!file.exists(path)) {
+    cat(paste0("\n\n**Image not found:** `", path, "`\n\n"))
+    return(invisible(NULL))
+  }
+
+  if (!is.null(caption)) {
+    cat(paste0("\n\n**", caption, "**\n\n"))
+  }
+
+  cat(
+    paste0(
+      "\n\n<p align=\"center\">",
+      "<img src=\"", path, "\" width=\"", width, "\" />",
+      "</p>\n\n"
+    )
+  )
+}
+```
+
+<br/>
+
+<font size = '2'>
+Market basket analysis is a widely employed technique in marketing that provides suggestions of products to buy to a customer, given the past purchases made by customers, based on the statistical methodology of association rules.
+
+This repository contains the updated and fully reproducible R workflow used for the Chapter of the book.  The idea is to extend market basket analysis from products to geolocated points: the items are not products in a receipt, but commercial activities matched to simulated individual paths in the city of Bologna. 
+
+The 2026 update also adds the sequential part of the analysis, where the order of matched activities inside each path is preserved and used to extract sequential spatial association rules.
+</font>
+
+<br/>
+
+For the comprehensive analysis read:
+
+- In English: *XXX* (XXX, XXX)
+
+<br/>
+
+The full code is contained in `model_code.R`. The dataset of commercial activities has to be placed in the `data/` folder as `commercials.csv`. All tabular outputs are written in `outputs/`, while all figures used below are written in `Images/`.
+
+## Repository structure
+
+```text
+Spatial-unsupervised-learning-applications-of-market-basket-analysis-in-geomarketing-2026update/
+├── README.Rmd
+├── README.md
+├── config.Rproj
+├── model_code.R
+├── data/
+│   └── commercials.csv
+├── outputs/
+└── Images/
+```
+
+## How to reproduce the README
+
+Run the analysis first, then render the README.
+
+```{r reproduce, eval=FALSE}
+source("model_code.R")
+
+rmarkdown::render(
+  input = "README.Rmd",
+  output_format = "github_document",
+  output_file = "README.md"
+)
+```
+
+This is important: `model_code.R` creates the CSV files and figures; `README.Rmd` reads those files and prints a clean `head(5)` of each output.
+
+<br/>
+
+# 1. Input data
+
+The input dataset contains the commercial activities in Bologna. In the previous version of the project, coordinates had to be obtained through geocoding. In the updated version, latitude and longitude are already available in the input file.
+
+```{r input-data-code, eval=FALSE}
+commercial_activities <- read.csv(
+  file.path("data", "commercials.csv"),
+  stringsAsFactors = FALSE,
+  fileEncoding = "UTF-8"
+)
+
+colnames(commercial_activities) <- trimws(colnames(commercial_activities))
+colnames(commercial_activities) <- gsub("\\.+", "_", colnames(commercial_activities))
+
+if ("Latitudine" %in% names(commercial_activities)) {
+  names(commercial_activities)[names(commercial_activities) == "Latitudine"] <- "lat"
+}
+
+if ("Longitudine" %in% names(commercial_activities)) {
+  names(commercial_activities)[names(commercial_activities) == "Longitudine"] <- "lon"
+}
+
+commercial_activities <- commercial_activities %>%
+  filter(!is.na(lat), !is.na(lon)) %>%
+  mutate(indexed_company = row_number())
+```
+
+```{r input-data-output, echo=FALSE, results='asis'}
+show_csv_head(
+  "outputs/output_11_0_commercial_activities_preview.csv",
+  "Preview of commercial activities",
+  n = 5
+)
+```
+
+```{r commercial-activities-map, echo=FALSE, results='asis'}
+show_image(
+  "Images/figure_11_6_commercial_activities.png",
+  "Figure 11.6. Commercial activities used for spatial matching",
+  width = "100%"
+)
+```
+
+<br/>
+
+# 2. Simulating individual centres and paths
+
+Individual centres are generated around Palazzo d'Accursio, which is used as the reference point for the city centre of Bologna. The updated analysis uses 50 simulated individuals, 20 paths per individual and 100 ordered locations per path.
+
+```{r simulation-parameters, eval=FALSE}
+n_individuals <- 50
+n_paths <- 20
+n_locations <- 100
+
+palazzo_accursio_latitude <- 44.493674
+palazzo_accursio_longitude <- 11.342220
+
+variability_constant <- 200
+correlation <- 0.7
+step_scale <- 0.0003
+
+individual_centres <- data.frame(
+  lon = rnorm(n_individuals, mean = 0, sd = 1) / variability_constant + palazzo_accursio_longitude,
+  lat = rnorm(n_individuals, mean = 0, sd = 1) / variability_constant + palazzo_accursio_latitude
+)
+```
+
+```{r individual-centres-output, echo=FALSE, results='asis'}
+show_csv_head(
+  "outputs/output_11_0_individual_centres_preview.csv",
+  "Preview of simulated individual centres",
+  n = 5
+)
+```
+
+```{r individual-centres-figure, echo=FALSE, results='asis'}
+show_image(
+  "Images/figure_11_4_individual_centres.png",
+  "Figure 11.4. Simulated individual centres",
+  width = "80%"
+)
+```
+
+Then the individual paths are simulated. The multivariate normal distribution is used to generate serially correlated spatial increments within each path. 
+The cumulative sum of these increments produces an ordered individual path.
+
+```{r generate-paths-code, eval=FALSE}
+generate_paths <- function(individual_centres,
+                           n_paths,
+                           n_locations,
+                           correlation = 0.7,
+                           step_scale = 0.0003) {
+  time_index <- seq_len(n_locations)
+  sigma_time <- outer(time_index, time_index, function(i, j) correlation^abs(i - j))
+  all_paths <- vector("list", length = nrow(individual_centres))
+
+  for (j in seq_len(nrow(individual_centres))) {
+    individual_paths <- vector("list", length = n_paths)
+
+    for (i in seq_len(n_paths)) {
+      start_lon <- individual_centres$lon[j] + rnorm(1, 0, step_scale * 1.5)
+      start_lat <- individual_centres$lat[j] + rnorm(1, 0, step_scale * 1.5)
+
+      delta_lon <- as.numeric(
+        MASS::mvrnorm(n = 1, mu = rep(0, n_locations), Sigma = sigma_time)
+      ) * step_scale
+
+      delta_lat <- as.numeric(
+        MASS::mvrnorm(n = 1, mu = rep(0, n_locations), Sigma = sigma_time)
+      ) * step_scale
+
+      individual_paths[[i]] <- data.frame(
+        Longitude = start_lon + cumsum(delta_lon),
+        Latitude = start_lat + cumsum(delta_lat),
+        Individual_ID = j,
+        Path_ID = i,
+        Location_ID = seq_len(n_locations)
+      )
+    }
+
+    all_paths[[j]] <- dplyr::bind_rows(individual_paths)
+  }
+
+  dplyr::bind_rows(all_paths)
+}
+```
+
+```{r paths-output, echo=FALSE, results='asis'}
+show_csv_head(
+  "outputs/output_11_1_paths_head.csv",
+  "Preview of simulated paths",
+  n = 5
+)
+```
+
+```{r sample-paths-figure, echo=FALSE, results='asis'}
+show_image(
+  "Images/figure_11_5_sample_paths.png",
+  "Figure 11.5. Two simulated paths for two simulated individuals",
+  width = "80%"
+)
+```
+
+<br/>
+
+# 3. Matching simulated points with commercial activities
+
+The simulated locations are matched to the closest commercial activity. A match is retained only when the nearest activity is within 25 metres. The operation does not imply a verified visit or purchase: it only means that a simulated path point is spatially close enough to a known activity.
+
+```{r matching-code, eval=FALSE}
+max_match_distance_km <- 0.025
+
+assign_nearest_activity <- function(path.m, activity.m, max_match_distance_km = 0.025) {
+  matched_points <- data.frame(
+    distance_km = numeric(nrow(path.m)),
+    matched_idx = rep(NA_integer_, nrow(path.m)),
+    matched_lon = rep(NA_real_, nrow(path.m)),
+    matched_lat = rep(NA_real_, nrow(path.m))
+  )
+
+  for (j in seq_len(nrow(path.m))) {
+    distance_vector <- sp::spDistsN1(
+      pts = activity.m,
+      pt = path.m[j, ],
+      longlat = TRUE
+    )
+
+    nearest_idx <- which.min(distance_vector)
+    nearest_distance <- distance_vector[nearest_idx]
+
+    matched_points$distance_km[j] <- nearest_distance
+
+    if (nearest_distance < max_match_distance_km) {
+      matched_points$matched_idx[j] <- nearest_idx
+      matched_points$matched_lon[j] <- activity.m[nearest_idx, 1]
+      matched_points$matched_lat[j] <- activity.m[nearest_idx, 2]
+    }
+  }
+
+  matched_points
+}
+```
+
+```{r matched-output, echo=FALSE, results='asis'}
+show_csv_head(
+  "outputs/output_11_2_matched_data_preview.csv",
+  "Preview of matched dataset",
+  n = 5
+)
+```
+
+<br/>
+
+# 4. Spatial association rules
+
+The matched data are transformed into a transaction dataset. Each basket corresponds to one simulated path, identified by `itemset_id`. The items are the indexed commercial activities matched along that path.
+
+```{r association-data-code, eval=FALSE}
+basket_data <- matched_data %>%
+  select(
+    itemset_id,
+    Individual_ID,
+    Path_ID,
+    indexed_company,
+    lon = activity_lon,
+    lat = activity_lat,
+    distance_km,
+    Location_ID
+  ) %>%
+  distinct(itemset_id, indexed_company, .keep_all = TRUE)
+
+transaction_data <- basket_data %>%
+  group_by(itemset_id) %>%
+  summarise(
+    items = paste(indexed_company, collapse = ","),
+    .groups = "drop"
+  )
+
+transaction_list <- strsplit(transaction_data$items, ",")
+transactions <- as(transaction_list, "transactions")
+```
+
+```{r basket-output, echo=FALSE, results='asis'}
+show_csv_head(
+  "outputs/output_11_3_basket_data_preview.csv",
+  "Preview of basket dataset",
+  n = 5
+)
+```
+
+```{r transaction-output, echo=FALSE, results='asis'}
+show_csv_head(
+  "outputs/output_11_4_transaction_data_preview.csv",
+  "Preview of transaction dataset",
+  n = 5
+)
+```
+
+Performing the Market Basket Analysis through the Apriori algorithm:
+
+```{r apriori-code, eval=FALSE}
+association_rules <- apriori(
+  transactions,
+  parameter = list(
+    supp = 0.01,
+    conf = 0.30,
+    minlen = 2,
+    maxlen = 4
+  )
+)
+```
+
+```{r spatial-rules-output, echo=FALSE, results='asis'}
+show_csv_head(
+  "outputs/output_11_5_top_spatial_rules.csv",
+  "Top spatial association rules",
+  n = 5
+)
+```
+
+A summary of the extracted spatial association rules provides an overview of their number, structure and quality measures.
+
+```{r association-rules-summary, echo=FALSE, results='asis'}
+if (file.exists("outputs/output_11_5a_association_rules_summary.txt")) {
+  cat("**Summary of extracted spatial association rules**\n\n")
+  cat(paste(readLines("outputs/output_11_5a_association_rules_summary.txt"), collapse = "\n"))
+}
+```
+
+Graph representation of the strongest spatial association rules.
+
+```{r association-rules-graphs, echo=FALSE, results='asis'}
+if (file.exists("Images/figure_11_9_association_rules_graph_top20.png")) {
+  show_image(
+    "Images/figure_11_9_association_rules_graph_top20.png",
+    "Figure 11.9a. Association rules graph using the top 20 rules",
+    width = "90%"
+  )
+} else {
+  show_image(
+    "Images/figure_11_9_association_rules_graph.png",
+    "Figure 11.9. Association rules graph",
+    width = "90%"
+  )
+}
+
+show_image(
+  "Images/figure_11_9_association_rules_graph_top100.png",
+  "Figure 11.9b. Association rules graph using the top 100 rules",
+  width = "90%"
+)
+```
+
+<br/>
+
+# 5. Ordered paths and sequential spatial association rules
+
+Traditional spatial association rules ignore the order in which locations are encountered. In order to introduce sequential information, each path is ordered according to the first occurrence of each matched commercial activity. The resulting sequence is still simulated and does not contain real timestamps; therefore, the sequential information should be interpreted as ordered information within each path.
+
+```{r sequence-data-code, eval=FALSE}
+sequence_data <- matched_data %>%
+  arrange(Individual_ID, Path_ID, Location_ID) %>%
+  group_by(itemset_id, indexed_company) %>%
+  summarise(
+    first_location_id = min(Location_ID),
+    lon = first(activity_lon),
+    lat = first(activity_lat),
+    .groups = "drop"
+  ) %>%
+  separate(
+    itemset_id,
+    into = c("individual_chr", "path_chr"),
+    sep = "_",
+    remove = FALSE
+  ) %>%
+  mutate(
+    individual_num = as.integer(individual_chr),
+    path_num = as.integer(path_chr)
+  ) %>%
+  arrange(individual_num, path_num, first_location_id) %>%
+  group_by(itemset_id, individual_num, path_num) %>%
+  mutate(
+    order_in_path = row_number(),
+    sequenceID = cur_group_id()
+  ) %>%
+  ungroup()
+```
+
+```{r sequence-output, echo=FALSE, results='asis'}
+show_csv_head(
+  "outputs/output_11_6_sequence_preview.csv",
+  "Preview of ordered sequence dataset",
+  n = 5
+)
+```
+
+```{r ordered-path-figure, echo=FALSE, results='asis'}
+show_image(
+  "Images/figure_11_7_ordered_path.png",
+  "Figure 11.7. Representative ordered path",
+  width = "80%"
+)
+```
+
+The same ordered path can also be projected onto the pedestrian road network using OSRM/OpenStreetMap. The order is not changed by OSRM; OSRM is used only for visualisation of the connections between already ordered points.
+
+```{r ordered-path-osrm-figure, echo=FALSE, results='asis'}
+show_image(
+  "Images/figure_11_8_ordered_path_osrm.png",
+  "Figure 11.8. Ordered path projected onto the pedestrian road network",
+  width = "80%"
+)
+```
+
+The ordered dataset is converted into the basket format required by `arulesSequences`.
+
+```{r sequence-input-code, eval=FALSE}
+sequence_input <- sequence_data %>%
+  arrange(sequenceID, order_in_path) %>%
+  transmute(
+    sequenceID = sequenceID,
+    eventID = order_in_path,
+    SIZE = 1,
+    items = as.character(indexed_company)
+  )
+
+tmp_sequence_file <- tempfile(fileext = ".txt")
+
+write.table(
+  sequence_input,
+  file = tmp_sequence_file,
+  sep = " ",
+  row.names = FALSE,
+  col.names = FALSE,
+  quote = FALSE
+)
+
+sequence_transactions <- read_baskets(
+  con = tmp_sequence_file,
+  info = c("sequenceID", "eventID", "SIZE")
+)
+```
+
+```{r sequence-input-output, echo=FALSE, results='asis'}
+show_csv_head(
+  "outputs/output_11_7_sequence_input_preview.csv",
+  "Preview of sequence input for arulesSequences",
+  n = 5
+)
+```
+
+Sequential spatial rules are then extracted using `cspade()` and `ruleInduction()`.
+
+```{r sequential-rules-code, eval=FALSE}
+sequential_patterns <- cspade(
+  sequence_transactions,
+  parameter = list(support = 0.005),
+  control = list(verbose = TRUE)
+)
+
+sequential_rules <- ruleInduction(
+  sequential_patterns,
+  confidence = 0.15
+)
+
+top_sequential_rules_by_confidence <- sort(
+  sequential_rules,
+  by = "confidence",
+  decreasing = TRUE
+) %>%
+  head(5)
+
+top_sequential_rules_by_confidence_df <- as(
+  top_sequential_rules_by_confidence,
+  "data.frame"
+)
+```
+
+If we inspect the rules by confidence, we can also notice patterns composed of more than two activities or multiple ordered events.
+
+```{r sequential-rules-confidence-output, echo=FALSE, results='asis'}
+show_csv_head(
+  "outputs/output_11_8a_top_sequential_rules_by_confidence.csv",
+  "Top sequential spatial rules sorted by confidence",
+  n = 5
+)
+```
+
+```{r sequential-rules-output, echo=FALSE, results='asis'}
+show_csv_head(
+  "outputs/output_11_8_top_sequential_rules.csv",
+  "Top simple one-to-one sequential spatial rules",
+  n = 5
+)
+```
+
+The following figure maps only simple one-to-one sequential rules, where a single activity on the left-hand side points to a single activity on the right-hand side.
+
+```{r sequential-rules-map, echo=FALSE, results='asis'}
+show_image(
+  "Images/figure_11_10_top_sequential_rules_map.png",
+  "Figure 11.10. Map of one-to-one sequential spatial rules",
+  width = "80%"
+)
+```
+
+<br/>
+
+# 6. Notes on interpretation
+
+The analysis is based on simulated paths and should therefore be interpreted as a methodological demonstration. The matched activities are not verified visits: they are activities located within a predefined spatial threshold from simulated path points. Similarly, the sequential analysis uses the order of points within each simulated path, not real timestamps. The main objective is to show how spatial market basket analysis and sequential spatial association rules can be implemented in a reproducible R workflow.
