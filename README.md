@@ -11,10 +11,11 @@ April 2026
   paths](#2-simulating-individual-centres-and-paths)
 - [3. Matching simulated points with commercial
   activities](#3-matching-simulated-points-with-commercial-activities)
-- [4. Spatial association rules](#4-spatial-association-rules)
-- [5. Ordered paths and sequential spatial association
-  rules](#5-ordered-paths-and-sequential-spatial-association-rules)
-- [6. Notes on interpretation](#6-notes-on-interpretation)
+- [4. Ordered paths](#4-ordered-paths)
+- [5. Spatial association rules](#5-spatial-association-rules)
+- [6. Sequential spatial association
+  rules](#6-sequential-spatial-association-rules)
+- [7. Notes on interpretation](#7-notes-on-interpretation)
 
 <br/>
 
@@ -293,9 +294,76 @@ assign_nearest_activity <- function(path.m, activity.m, max_match_distance_km = 
 
 Preview of matched dataset
 
+# 4. Ordered paths
+
+Traditional spatial association rules ignore the order in which
+locations are encountered. In order to introduce sequential information,
+each path is ordered according to the first occurrence of each matched
+commercial activity. The resulting sequence is still simulated and does
+not contain real timestamps; therefore, the sequential information
+should be interpreted as ordered information within each path.
+
+``` r
+sequence_data <- matched_data %>%
+  arrange(Individual_ID, Path_ID, Location_ID) %>%
+  group_by(itemset_id, indexed_company) %>%
+  summarise(
+    first_location_id = min(Location_ID),
+    lon = first(activity_lon),
+    lat = first(activity_lat),
+    .groups = "drop"
+  ) %>%
+  separate(
+    itemset_id,
+    into = c("individual_chr", "path_chr"),
+    sep = "_",
+    remove = FALSE
+  ) %>%
+  mutate(
+    individual_num = as.integer(individual_chr),
+    path_num = as.integer(path_chr)
+  ) %>%
+  arrange(individual_num, path_num, first_location_id) %>%
+  group_by(itemset_id, individual_num, path_num) %>%
+  mutate(
+    order_in_path = row_number(),
+    sequenceID = cur_group_id()
+  ) %>%
+  ungroup()
+```
+
+**Output file:** `outputs/output_11_6_sequence_preview.csv`
+
+| itemset_id | indexed_company | first_location_id | lon | lat | order_in_path | sequenceID |
+|:---|---:|---:|---:|---:|---:|---:|
+| 1_1 | 4191 | 4 | 11.33350 | 44.49872 | 1 | 201 |
+| 1_1 | 5968 | 6 | 11.33282 | 44.49885 | 2 | 201 |
+| 1_1 | 5445 | 7 | 11.33218 | 44.49869 | 3 | 201 |
+| 1_1 | 2884 | 9 | 11.33181 | 44.49874 | 4 | 201 |
+| 1_1 | 2132 | 13 | 11.33246 | 44.49901 | 5 | 201 |
+
+Preview of ordered sequence dataset
+
+**Figure 11.7. Representative ordered path**
+
+<p align="center">
+<img src="Images/figure_11_7_ordered_path.png" width="80%" />
+</p>
+
+The same ordered path can also be projected onto the pedestrian road
+network using OSRM/OpenStreetMap. The order is not changed by OSRM; OSRM
+is used only for visualisation of the connections between already
+ordered points.
+
+**Figure 11.8. Ordered path projected onto the pedestrian road network**
+
+<p align="center">
+<img src="Images/figure_11_8_ordered_path_osrm.png" width="80%" />
+</p>
+
 <br/>
 
-# 4. Spatial association rules
+# 5. Spatial association rules
 
 The matched data are transformed into a transaction dataset. Each basket
 corresponds to one simulated path, identified by `itemset_id`. The items
@@ -419,72 +487,7 @@ Graph representation of the strongest spatial association rules.
 
 <br/>
 
-# 5. Ordered paths and sequential spatial association rules
-
-Traditional spatial association rules ignore the order in which
-locations are encountered. In order to introduce sequential information,
-each path is ordered according to the first occurrence of each matched
-commercial activity. The resulting sequence is still simulated and does
-not contain real timestamps; therefore, the sequential information
-should be interpreted as ordered information within each path.
-
-``` r
-sequence_data <- matched_data %>%
-  arrange(Individual_ID, Path_ID, Location_ID) %>%
-  group_by(itemset_id, indexed_company) %>%
-  summarise(
-    first_location_id = min(Location_ID),
-    lon = first(activity_lon),
-    lat = first(activity_lat),
-    .groups = "drop"
-  ) %>%
-  separate(
-    itemset_id,
-    into = c("individual_chr", "path_chr"),
-    sep = "_",
-    remove = FALSE
-  ) %>%
-  mutate(
-    individual_num = as.integer(individual_chr),
-    path_num = as.integer(path_chr)
-  ) %>%
-  arrange(individual_num, path_num, first_location_id) %>%
-  group_by(itemset_id, individual_num, path_num) %>%
-  mutate(
-    order_in_path = row_number(),
-    sequenceID = cur_group_id()
-  ) %>%
-  ungroup()
-```
-
-**Output file:** `outputs/output_11_6_sequence_preview.csv`
-
-| itemset_id | indexed_company | first_location_id | lon | lat | order_in_path | sequenceID |
-|:---|---:|---:|---:|---:|---:|---:|
-| 1_1 | 4191 | 4 | 11.33350 | 44.49872 | 1 | 201 |
-| 1_1 | 5968 | 6 | 11.33282 | 44.49885 | 2 | 201 |
-| 1_1 | 5445 | 7 | 11.33218 | 44.49869 | 3 | 201 |
-| 1_1 | 2884 | 9 | 11.33181 | 44.49874 | 4 | 201 |
-| 1_1 | 2132 | 13 | 11.33246 | 44.49901 | 5 | 201 |
-
-Preview of ordered sequence dataset
-
-**Figure 11.7. Representative ordered path**
-
-<p align="center">
-<img src="Images/figure_11_7_ordered_path.png" width="80%" />
-</p>
-
-The same ordered path can also be projected onto the pedestrian road
-network using OSRM/OpenStreetMap. The order is not changed by OSRM; OSRM
-is used only for visualisation of the connections between already
-ordered points.
-
-**Figure 11.8. Ordered path projected onto the pedestrian road network**
-
-<p align="center">
-<img src="Images/figure_11_8_ordered_path_osrm.png" width="80%" />
-</p>
+# 6. Sequential spatial association rules
 
 The ordered dataset is converted into the basket format required by
 `arulesSequences`.
@@ -596,7 +599,7 @@ the right-hand side.
 
 <br/>
 
-# 6. Notes on interpretation
+# 7. Notes on interpretation
 
 The analysis is based on simulated paths and should therefore be
 interpreted as a methodological demonstration. The matched activities

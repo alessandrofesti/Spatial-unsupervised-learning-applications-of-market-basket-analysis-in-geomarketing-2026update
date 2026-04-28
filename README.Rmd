@@ -299,9 +299,68 @@ show_csv_head(
 )
 ```
 
+# 4. Ordered paths
+
+Traditional spatial association rules ignore the order in which locations are encountered. In order to introduce sequential information, each path is ordered according to the first occurrence of each matched commercial activity. The resulting sequence is still simulated and does not contain real timestamps; therefore, the sequential information should be interpreted as ordered information within each path.
+
+```{r sequence-data-code, eval=FALSE}
+sequence_data <- matched_data %>%
+  arrange(Individual_ID, Path_ID, Location_ID) %>%
+  group_by(itemset_id, indexed_company) %>%
+  summarise(
+    first_location_id = min(Location_ID),
+    lon = first(activity_lon),
+    lat = first(activity_lat),
+    .groups = "drop"
+  ) %>%
+  separate(
+    itemset_id,
+    into = c("individual_chr", "path_chr"),
+    sep = "_",
+    remove = FALSE
+  ) %>%
+  mutate(
+    individual_num = as.integer(individual_chr),
+    path_num = as.integer(path_chr)
+  ) %>%
+  arrange(individual_num, path_num, first_location_id) %>%
+  group_by(itemset_id, individual_num, path_num) %>%
+  mutate(
+    order_in_path = row_number(),
+    sequenceID = cur_group_id()
+  ) %>%
+  ungroup()
+```
+
+```{r sequence-output, echo=FALSE, results='asis'}
+show_csv_head(
+  "outputs/output_11_6_sequence_preview.csv",
+  "Preview of ordered sequence dataset",
+  n = 5
+)
+```
+
+```{r ordered-path-figure, echo=FALSE, results='asis'}
+show_image(
+  "Images/figure_11_7_ordered_path.png",
+  "Figure 11.7. Representative ordered path",
+  width = "80%"
+)
+```
+
+The same ordered path can also be projected onto the pedestrian road network using OSRM/OpenStreetMap. The order is not changed by OSRM; OSRM is used only for visualisation of the connections between already ordered points.
+
+```{r ordered-path-osrm-figure, echo=FALSE, results='asis'}
+show_image(
+  "Images/figure_11_8_ordered_path_osrm.png",
+  "Figure 11.8. Ordered path projected onto the pedestrian road network",
+  width = "80%"
+)
+```
+
 <br/>
 
-# 4. Spatial association rules
+# 5. Spatial association rules
 
 The matched data are transformed into a transaction dataset. Each basket corresponds to one simulated path, identified by `itemset_id`. The items are the indexed commercial activities matched along that path.
 
@@ -403,64 +462,7 @@ show_image(
 
 <br/>
 
-# 5. Ordered paths and sequential spatial association rules
-
-Traditional spatial association rules ignore the order in which locations are encountered. In order to introduce sequential information, each path is ordered according to the first occurrence of each matched commercial activity. The resulting sequence is still simulated and does not contain real timestamps; therefore, the sequential information should be interpreted as ordered information within each path.
-
-```{r sequence-data-code, eval=FALSE}
-sequence_data <- matched_data %>%
-  arrange(Individual_ID, Path_ID, Location_ID) %>%
-  group_by(itemset_id, indexed_company) %>%
-  summarise(
-    first_location_id = min(Location_ID),
-    lon = first(activity_lon),
-    lat = first(activity_lat),
-    .groups = "drop"
-  ) %>%
-  separate(
-    itemset_id,
-    into = c("individual_chr", "path_chr"),
-    sep = "_",
-    remove = FALSE
-  ) %>%
-  mutate(
-    individual_num = as.integer(individual_chr),
-    path_num = as.integer(path_chr)
-  ) %>%
-  arrange(individual_num, path_num, first_location_id) %>%
-  group_by(itemset_id, individual_num, path_num) %>%
-  mutate(
-    order_in_path = row_number(),
-    sequenceID = cur_group_id()
-  ) %>%
-  ungroup()
-```
-
-```{r sequence-output, echo=FALSE, results='asis'}
-show_csv_head(
-  "outputs/output_11_6_sequence_preview.csv",
-  "Preview of ordered sequence dataset",
-  n = 5
-)
-```
-
-```{r ordered-path-figure, echo=FALSE, results='asis'}
-show_image(
-  "Images/figure_11_7_ordered_path.png",
-  "Figure 11.7. Representative ordered path",
-  width = "80%"
-)
-```
-
-The same ordered path can also be projected onto the pedestrian road network using OSRM/OpenStreetMap. The order is not changed by OSRM; OSRM is used only for visualisation of the connections between already ordered points.
-
-```{r ordered-path-osrm-figure, echo=FALSE, results='asis'}
-show_image(
-  "Images/figure_11_8_ordered_path_osrm.png",
-  "Figure 11.8. Ordered path projected onto the pedestrian road network",
-  width = "80%"
-)
-```
+# 6. Sequential spatial association rules
 
 The ordered dataset is converted into the basket format required by `arulesSequences`.
 
@@ -556,6 +558,6 @@ show_image(
 
 <br/>
 
-# 6. Notes on interpretation
+# 7. Notes on interpretation
 
 The analysis is based on simulated paths and should therefore be interpreted as a methodological demonstration. The matched activities are not verified visits: they are activities located within a predefined spatial threshold from simulated path points. Similarly, the sequential analysis uses the order of points within each simulated path, not real timestamps. The main objective is to show how spatial market basket analysis and sequential spatial association rules can be implemented in a reproducible R workflow.
